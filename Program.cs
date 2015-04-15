@@ -6,13 +6,43 @@ using System.Text;
 
 namespace Sqlfy
 {
-    public static class SqlBuilder<T>
+    public interface ISqlBuilder
     {
-        private static ColumnDefinition[] Columns { get; set; }
-        private static TableDefintition Table { get; set; }
+        ColumnDefinition[] Columns { get; }
+        TableDefintition Table { get; }
+    }
 
-        static SqlBuilder()
+    public class SqlBuilder<T> : ISqlBuilder
+    {
+        public ColumnDefinition[] Columns { get; private set; }
+        public TableDefintition Table { get; private set; }
+
+        private static object _lock =  new object();
+
+        private static SqlBuilder<T> _instance;
+        public static SqlBuilder<T> Instance
         {
+            get
+            {
+                if (_instance == null)
+                {
+                    lock (_lock)
+                    {
+                        if (_instance == null)
+                        {
+                            _instance = new SqlBuilder<T>();
+                        }
+                    }
+                }
+                return _instance;
+            }
+        }
+
+        private Dictionary<int, string> Precompiled {get;set;} 
+        
+        private SqlBuilder()
+        {
+            Precompiled = new Dictionary<int,string>();
             var type = typeof(T);
             var sqlObject = GetSqlObject(type);
             var dbName = sqlObject != null ? sqlObject.DbName : type.Name;
@@ -24,32 +54,136 @@ namespace Sqlfy
                 var property = properties[i];
                 sqlObject = GetSqlObject(property);
                 dbName = sqlObject != null ? sqlObject.DbName : property.Name;
-                Columns[i] = new ColumnDefinition { DbName = dbName, PrettyName = property.Name };
+                Columns[i] = new ColumnDefinition { DbName = dbName, PrettyName = property.Name, Parent = Table };
             }
         }
 
-        private static SqlObjectAttribute GetSqlObject(_MemberInfo info)
+        private SqlObjectAttribute GetSqlObject(_MemberInfo info)
         {
             return info.GetCustomAttributes(true).OfType<SqlObjectAttribute>().FirstOrDefault();
         }
 
-        private static string _selectAllSql;
-
-        public static string SelectAll()
+        public string Select(string[] columnNames = null, Filter[] filters = null, Join[] joins = null)
         {
-            return _selectAllSql ?? (_selectAllSql = string.Format("SELECT {0} FROM {1} AS {2}", GetColumnsString(), Table.DbName, Table.PrettyName));
+            var columns = GetSelectedColumns(columnNames, joins);
+            var hash = GetSqlHash(columns, filters, joins);
+            if (Precompiled.ContainsKey(hash)) return Precompiled[hash];
+            var sql = string.Format("SELECT {0} FROM {1} AS {2}{4}{3}", GetColumnsString(columns), Table.DbName, Table.PrettyName, GetWhereString(filters), GetJoinsString(joins));
+            Precompiled[hash] = sql;
+            return sql;
         }
 
-        private static string GetColumnsString()
+        public ColumnDefinition GetColumn(string name)
         {
-            var column = Columns[0];
-            StringBuilder builder = new StringBuilder(string.Format("{0}.{1} AS {2}", Table.PrettyName, column.DbName, column.PrettyName));
-            for (int i = 1; i < Columns.Length; i++)
+            return Columns.First(x => x.PrettyName == name);
+        }
+
+        public string GetJoinsString(Join[] joins)
+        {
+            if (joins == null || joins.Length == 0) return string.Empty;
+            var builder = new StringBuilder();
+            foreach (var join in joins)
             {
-                column = Columns[i];
-                builder.AppendFormat(", {0}.{1} AS {2}", Table.PrettyName, column.DbName, column.PrettyName);
+                builder.AppendFormat(" {0}", join.ToString());
             }
             return builder.ToString();
+        }
+
+
+        private int GetSqlHash(ColumnDefinition[] columns, Filter[] filters = null, Join[] joins = null)
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                hash = hash * 16777619 ^ (columns ?? new ColumnDefinition[0]).GetListHashCode();
+                hash = hash * 16777619 ^ (filters ?? new Filter[0]).GetListHashCode();
+                hash = hash * 16777619 ^ (joins ?? new Join[0]).GetListHashCode();
+                return hash;
+            }
+        }
+
+        private string GetWhereString(Filter[] filters)
+        {
+            if(filters != null && filters.Length > 0)
+            {
+                var builder = new StringBuilder(" WHERE");
+                var filter = filters[0];
+                builder.AppendFormat(" {0}", GetSingleClause(filter));
+                for(int i = 1; i < filters.Length; i++)
+                {
+                    filter = filters[i];
+                    builder.AppendFormat(" AND {0}", GetSingleClause(filter));
+                }
+                return builder.ToString();
+            }
+            return string.Empty;
+        }
+
+        private string GetSingleClause(Filter filter)
+        {
+            return string.Format("{0}.{1} {2} @{3}", filter.Column.Parent.PrettyName, filter.Column.DbName, filter.GetFilterTypeString(), filter.Column.PrettyName);
+        }
+
+        internal ColumnDefinition[] GetSelectedColumns(string[] columnNames = null, Join[] joins = null)
+        {
+            var allColumns = Columns.ToList();
+            if (joins != null)
+            {
+                foreach (var join in joins)
+                {
+                    foreach (var column in join._left.Columns)
+                    {
+                        if (!allColumns.Contains(column))
+                            allColumns.Add(column);
+                    }
+                    foreach (var column in join._right.Columns)
+                    {
+                        if (!allColumns.Contains(column))
+                            allColumns.Add(column);
+                    }
+                }
+            }
+            return ((columnNames != null && columnNames.Any()) ? allColumns.Where(x => columnNames.Contains(x.PrettyName)) : allColumns).ToArray();
+        }
+
+        internal string GetColumnsString(ColumnDefinition[] columns)
+        {
+            var column = columns[0];
+            StringBuilder builder = new StringBuilder(string.Format("{0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName));
+            for (int i = 1; i < columns.Length; i++)
+            {
+                column = columns[i];
+                builder.AppendFormat(", {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
+            }
+            return builder.ToString();
+        }
+    }
+
+    public static class Extensions
+    {
+        public static bool Equals<T>(this T[] obj, T[] other)
+        {
+            if (obj.Length != other.Length) return false;
+            for(int i=0; i< obj.Length; i++)
+            {
+                if(!obj[i].Equals(other[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        public static int GetListHashCode<T>(this T[] list)
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                if (list == null) return hash;
+                foreach (var val in list)
+                {
+                    hash = hash * 16777619 ^ val.GetHashCode();
+                }
+                return hash;
+            }
         }
     }
 
@@ -59,21 +193,206 @@ namespace Sqlfy
         string PrettyName { get; set; }
     }
 
-    internal class TableDefintition : IAlias
+    public class TableDefintition : IAlias
     {
         public string DbName { get; set; }
         public string PrettyName { get; set; }
     }
 
-    internal class ColumnDefinition : IAlias
+    public class ColumnDefinition : IAlias
+    {
+        public string DbName { get; set; }
+        public string PrettyName { get; set; }
+        public TableDefintition Parent { get; set; }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                hash = hash * 16777619 ^ (DbName ?? string.Empty).GetHashCode();
+                hash = hash * 16777619 ^ (PrettyName ?? string.Empty).GetHashCode();
+                return hash;
+            }
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null) return false;
+            var other = obj as ColumnDefinition;
+            if (other == null) return false;
+            return DbName == other.DbName && PrettyName == other.PrettyName;
+        }
+    }
+
+    public class SqlObjectAttribute : Attribute
     {
         public string DbName { get; set; }
         public string PrettyName { get; set; }
     }
 
-    internal class SqlObjectAttribute : Attribute
+    public class Filter
     {
-        public string DbName { get; set; }
-        public string PrettyName { get; set; }
+
+        public ColumnDefinition Column { get; set; }
+        public object Value { get; set; }
+        public FilterType FilterType { get; set; }
+
+        public Filter(ColumnDefinition column, FilterType filter, object value)
+        {
+            if (column == null) throw new Exception();
+            Column = column;
+            Value = value;
+            FilterType = filter;
+        }
+
+        public string GetFilterTypeString()
+        {
+            switch(FilterType)
+            {
+                case FilterType.EqualTo:
+                    return "=";
+                case FilterType.GreaterThan:
+                    return ">";
+                case FilterType.GreaterThanOrEqualTo:
+                    return ">=";
+                case FilterType.LessThan:
+                    return "<";
+                case FilterType.LessThanOrEqualTo:
+                    return "<=";
+                case FilterType.Like:
+                    return "LIKE";
+                default:
+                    throw new Exception();
+
+            }
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                hash = hash * 16777619 ^ Column.GetHashCode();
+                if(Value != null)
+                    hash = hash * 16777619 ^ Value.GetHashCode();
+                hash = hash * 16777619 ^ ((int)FilterType).GetHashCode();
+                return hash;
+            }
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null) return false;
+            var filter = obj as Filter;
+            if (filter == null) return false;
+            if (!Column.Equals(Column)) return false;
+            if (!Value.Equals(filter.Value)) return false;
+            if (!FilterType.Equals(filter.FilterType)) return false;
+            return true;
+        }
+        
+    }
+    public enum FilterType
+    {
+        EqualTo,
+        LessThan,
+        LessThanOrEqualTo,
+        GreaterThan,
+        GreaterThanOrEqualTo,
+        Like,
+    }
+
+    public class On
+    {
+        public string LeftColumn {get;set;}
+        public string RightColumn { get; set; }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                hash = hash * 16777619 ^ (LeftColumn ?? string.Empty).GetHashCode();
+                hash = hash * 16777619 ^ (RightColumn ?? string.Empty).GetHashCode();
+                return hash;
+            }
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null) return false;
+            var on = obj as On;
+            if (obj == null) return false;
+            if (!LeftColumn.Equals(on.LeftColumn)) return false;
+            if (!RightColumn.Equals(on.RightColumn)) return false;
+            return true;
+        }
+    }
+
+    public class Join
+    {
+        public JoinType _joinType { get; private set; }
+        public ISqlBuilder _left { get; private set; }
+        public ISqlBuilder _right { get; private set; }
+        public On[] _clauses { get; private set; }
+
+        public Join(ISqlBuilder left, ISqlBuilder right, JoinType joinType, On[] clauses)
+        {
+            _joinType = joinType;
+            _left = left;
+            _right = right;
+            _clauses = clauses;
+        }
+
+        public override string ToString()
+        {
+ 	        return string.Format("{0} JOIN {1} AS {2}{3}", _joinType.ToString().ToUpper(), _right.Table.DbName, _right.Table.PrettyName, OnClause());
+        }
+
+        private string OnClause()
+        {
+            StringBuilder builder = new StringBuilder();
+            var clause = _clauses[0];
+            builder.AppendFormat(" ON {0}.{1} = {2}.{3}", _left.Table.PrettyName, clause.LeftColumn, _right.Table.PrettyName, clause.RightColumn);
+            for(int i = 1; i < _clauses.Length; i++)
+            {
+                builder.AppendFormat(" AND {0}.{1} = {2}.{3}", _left.Table.PrettyName, clause.LeftColumn, _right.Table.PrettyName, clause.RightColumn);
+            }
+            return builder.ToString();
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                hash = hash * 16777619 ^ (_clauses ?? new On[0]).GetListHashCode();
+                hash = hash * 16777619 ^ _right.GetHashCode();
+                hash = hash * 16777619 ^ _left.GetHashCode();
+                hash = hash * 16777619 ^ ((int)_joinType).GetHashCode();
+                return hash;
+            }
+        }
+
+        public override bool Equals(object obj)
+        {
+            if (obj == null) return false;
+            var join = obj as Join;
+            if (obj == null) return false;
+            if (!_left.Equals(join._left)) return false;
+            if (!_right.Equals(join._right)) return false;
+            if (!_clauses.Equals(join._clauses)) return false;
+            if (!_joinType.Equals(join._joinType)) return false;
+            return true;
+        }
+    }
+
+    public enum JoinType
+    {
+        Left,
+        Right,
+        Inner,
+        Full
     }
 }
