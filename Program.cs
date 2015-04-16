@@ -65,12 +65,20 @@ namespace Sqlfy
 
         public string Select(string[] columnNames = null, Filter[] filters = null, Join[] joins = null)
         {
+            return Select(columnNames, new[] { filters }, joins);
+        }
+
+        public string Select(string[] columnNames = null, Filter[][] filters = null, Join[] joins = null)
+        {
             var columns = GetSelectedColumns(columnNames, joins);
             var hash = GetSqlHash(columns, filters, joins);
             if (Precompiled.ContainsKey(hash)) return Precompiled[hash];
-            var sql = string.Format("SELECT {0} FROM {1} AS {2}{4}{3}", GetColumnsString(columns), Table.DbName, Table.PrettyName, GetWhereString(filters), GetJoinsString(joins));
-            Precompiled[hash] = sql;
-            return sql;
+            var builder = new StringBuilder("SELECT");
+            GetColumnsString(builder, columns);
+            builder.AppendFormat(" FROM {0} AS {1}", Table.DbName, Table.PrettyName);
+            GetJoinsString(builder, joins);
+            GetWhereString(builder, filters);
+            return Precompiled[hash] = builder.ToString();
         }
 
         public ColumnDefinition GetColumn(string name)
@@ -78,50 +86,62 @@ namespace Sqlfy
             return Columns.First(x => x.PrettyName == name);
         }
 
-        public string GetJoinsString(Join[] joins)
+        public void GetJoinsString(StringBuilder builder, Join[] joins)
         {
-            if (joins == null || joins.Length == 0) return string.Empty;
-            var builder = new StringBuilder();
-            foreach (var join in joins)
+            if (joins != null && joins.Length > 0)
             {
-                builder.AppendFormat(" {0}", join.ToString());
+                foreach (var join in joins)
+                {
+                    builder.AppendFormat(" {0}", join.ToString());
+                }
             }
-            return builder.ToString();
         }
 
 
-        private int GetSqlHash(ColumnDefinition[] columns, Filter[] filters = null, Join[] joins = null)
+        private int GetSqlHash(ColumnDefinition[] columns, Filter[][] filters = null, Join[] joins = null)
         {
             unchecked
             {
                 int hash = (int)2166136261;
                 hash = hash * 16777619 ^ (columns ?? new ColumnDefinition[0]).GetListHashCode();
-                hash = hash * 16777619 ^ (filters ?? new Filter[0]).GetListHashCode();
+                foreach(var filterList in filters)
+                    hash = hash * 16777619 ^ (filterList ?? new Filter[0]).GetListHashCode();
                 hash = hash * 16777619 ^ (joins ?? new Join[0]).GetListHashCode();
                 return hash;
             }
         }
 
-        private string GetWhereString(Filter[] filters)
+        private void GetWhereString(StringBuilder builder, Filter[][] filters)
         {
             if(filters != null && filters.Length > 0)
             {
-                var builder = new StringBuilder(" WHERE");
-                var filter = filters[0];
-                builder.AppendFormat(" {0}", GetSingleClause(filter));
-                for(int i = 1; i < filters.Length; i++)
+                builder.Append(" WHERE");
+                GetAndList(builder, filters[0]);
+                for (int i = 1; i < filters.Length; i++)
                 {
-                    filter = filters[i];
-                    builder.AppendFormat(" AND {0}", GetSingleClause(filter));
+                    builder.Append(" OR ");
+                    GetAndList(builder, filters[i]);
                 }
-                return builder.ToString();
             }
-            return string.Empty;
         }
 
-        private string GetSingleClause(Filter filter)
+        private void GetAndList(StringBuilder builder, Filter[] filters)
         {
-            return string.Format("{0}.{1} {2} @{3}", filter.Column.Parent.PrettyName, filter.Column.DbName, filter.GetFilterTypeString(), filter.Column.PrettyName);
+            builder.Append("(");
+            var filter = filters[0];
+            AppendSingleClause(builder, filter);
+            for (int i = 1; i < filters.Length; i++)
+            {
+                filter = filters[i];
+                builder.Append(" AND ");
+                AppendSingleClause(builder, filter);
+            }
+            builder.Append(")");
+        }
+
+        private void AppendSingleClause(StringBuilder builder, Filter filter)
+        {
+            builder.AppendFormat("{0}.{1} {2} @{3}", filter.Column.Parent.PrettyName, filter.Column.DbName, filter.GetFilterTypeString(), filter.Column.PrettyName);
         }
 
         internal ColumnDefinition[] GetSelectedColumns(string[] columnNames = null, Join[] joins = null)
@@ -146,16 +166,15 @@ namespace Sqlfy
             return ((columnNames != null && columnNames.Any()) ? allColumns.Where(x => columnNames.Contains(x.PrettyName)) : allColumns).ToArray();
         }
 
-        internal string GetColumnsString(ColumnDefinition[] columns)
+        internal void GetColumnsString(StringBuilder builder, ColumnDefinition[] columns)
         {
             var column = columns[0];
-            StringBuilder builder = new StringBuilder(string.Format("{0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName));
+            builder.AppendFormat(" {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
             for (int i = 1; i < columns.Length; i++)
             {
                 column = columns[i];
                 builder.AppendFormat(", {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
             }
-            return builder.ToString();
         }
     }
 

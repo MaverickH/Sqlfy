@@ -15,8 +15,8 @@ namespace Sqlfy.Example
             var bookSql = SqlBuilder<Book>.Instance;
             var filters = new[] 
             { 
-                new Filter(authorSql.GetColumn("LastName"), FilterType.EqualTo, "TWAIN"),
-                new Filter(bookSql.GetColumn("Title"), FilterType.Like, "%FINN%"),
+                new []{new Filter(authorSql.GetColumn("LastName"), FilterType.EqualTo, "TWAIN")},
+                new []{new Filter(bookSql.GetColumn("Title"), FilterType.Like, "%FINN%")},
             };
             var joins = new[] 
                         {
