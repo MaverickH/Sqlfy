@@ -31,27 +31,27 @@ namespace Sqlfy.Example
         }
     }
 
-    [SqlObject(DbName = "DBAUTH")]
+    [Table(DbName = "DBAUTH")]
     public class Author
     {
-        [SqlObject(DbName = "ID")]
+        [Column(DbName = "ID")]
         public string AuthorID { get; set; }
-        [SqlObject(DbName = "FNAM")]
+        [Column(DbName = "FNAM")]
         public string FirstName { get; set; }
-        [SqlObject(DbName = "LNAM")]
+        [Column(DbName = "LNAM")]
         public string LastName { get; set; }
     }
 
-    [SqlObject(DbName = "DBBKS")]
+    [Table(DbName = "DBBKS")]
     public class Book
     {
-        [SqlObject(DbName = "ID")]
+        [Column(DbName = "ID")]
         public string BookID { get; set; }
-        [SqlObject(DbName = "AUTHID")]
+        [Column(DbName = "AUTHID")]
         public string AuthorFK { get; set; }
-        [SqlObject(DbName = "PGCNT")]
+        [Column(DbName = "PGCNT")]
         public string PageCount { get; set; }
-        [SqlObject(DbName = "PUBL")]
+        [Column(DbName = "PUBL")]
         public string Publisher { get; set; }
         public string ReleaseDate { get; set; }
         public string Title { get; set; }

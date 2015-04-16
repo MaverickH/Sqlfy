@@ -42,27 +42,13 @@ namespace Sqlfy
         
         private SqlBuilder()
         {
-            Precompiled = new Dictionary<int,string>();
+            Precompiled = new Dictionary<int, string>();
             var type = typeof(T);
-            var sqlObject = GetSqlObject(type);
-            var dbName = sqlObject != null ? sqlObject.DbName : type.Name;
-            Table = new TableDefintition { DbName = dbName, PrettyName = type.Name };
-            var properties = type.GetProperties();
-            Columns = new ColumnDefinition[properties.Length];
-            for (int i = 0; i < properties.Length; i++)
-            {
-                var property = properties[i];
-                sqlObject = GetSqlObject(property);
-                dbName = sqlObject != null ? sqlObject.DbName : property.Name;
-                Columns[i] = new ColumnDefinition { DbName = dbName, PrettyName = property.Name, Parent = Table };
-            }
+            PopulateTable(type);
+            PopulateColumns(type.GetProperties());
         }
 
-        private SqlObjectAttribute GetSqlObject(_MemberInfo info)
-        {
-            return info.GetCustomAttributes(true).OfType<SqlObjectAttribute>().FirstOrDefault();
-        }
-
+        #region Public Methods
         public string Select(string[] columnNames = null, Filter[] filters = null, Join[] joins = null)
         {
             return Select(columnNames, new[] { filters }, joins);
@@ -85,8 +71,45 @@ namespace Sqlfy
         {
             return Columns.First(x => x.PrettyName == name);
         }
+        #endregion
 
-        public void GetJoinsString(StringBuilder builder, Join[] joins)
+        #region Select Helper Methods
+        private ColumnDefinition[] GetSelectedColumns(string[] columnNames = null, Join[] joins = null)
+        {
+            var allColumns = Columns.ToList();
+            if (joins != null)
+            {
+                foreach (var join in joins)
+                {
+                    foreach (var column in join._left.Columns)
+                    {
+                        if (!allColumns.Contains(column))
+                            allColumns.Add(column);
+                    }
+                    foreach (var column in join._right.Columns)
+                    {
+                        if (!allColumns.Contains(column))
+                            allColumns.Add(column);
+                    }
+                }
+            }
+            return ((columnNames != null && columnNames.Any()) ? allColumns.Where(x => columnNames.Contains(x.PrettyName)) : allColumns).ToArray();
+        }
+
+        private void GetColumnsString(StringBuilder builder, ColumnDefinition[] columns)
+        {
+            var column = columns[0];
+            builder.AppendFormat(" {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
+            for (int i = 1; i < columns.Length; i++)
+            {
+                column = columns[i];
+                builder.AppendFormat(", {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
+            }
+        }
+        #endregion
+
+        #region Join Clauses
+        private void GetJoinsString(StringBuilder builder, Join[] joins)
         {
             if (joins != null && joins.Length > 0)
             {
@@ -96,24 +119,12 @@ namespace Sqlfy
                 }
             }
         }
+        #endregion
 
-
-        private int GetSqlHash(ColumnDefinition[] columns, Filter[][] filters = null, Join[] joins = null)
-        {
-            unchecked
-            {
-                int hash = (int)2166136261;
-                hash = hash * 16777619 ^ (columns ?? new ColumnDefinition[0]).GetListHashCode();
-                foreach(var filterList in filters)
-                    hash = hash * 16777619 ^ (filterList ?? new Filter[0]).GetListHashCode();
-                hash = hash * 16777619 ^ (joins ?? new Join[0]).GetListHashCode();
-                return hash;
-            }
-        }
-
+        #region Where Clauses
         private void GetWhereString(StringBuilder builder, Filter[][] filters)
         {
-            if(filters != null && filters.Length > 0)
+            if (filters != null && filters.Length > 0)
             {
                 builder.Append(" WHERE");
                 GetAndList(builder, filters[0]);
@@ -143,67 +154,53 @@ namespace Sqlfy
         {
             builder.AppendFormat("{0}.{1} {2} @{3}", filter.Column.Parent.PrettyName, filter.Column.DbName, filter.GetFilterTypeString(), filter.Column.PrettyName);
         }
+        #endregion
 
-        internal ColumnDefinition[] GetSelectedColumns(string[] columnNames = null, Join[] joins = null)
-        {
-            var allColumns = Columns.ToList();
-            if (joins != null)
-            {
-                foreach (var join in joins)
-                {
-                    foreach (var column in join._left.Columns)
-                    {
-                        if (!allColumns.Contains(column))
-                            allColumns.Add(column);
-                    }
-                    foreach (var column in join._right.Columns)
-                    {
-                        if (!allColumns.Contains(column))
-                            allColumns.Add(column);
-                    }
-                }
-            }
-            return ((columnNames != null && columnNames.Any()) ? allColumns.Where(x => columnNames.Contains(x.PrettyName)) : allColumns).ToArray();
-        }
-
-        internal void GetColumnsString(StringBuilder builder, ColumnDefinition[] columns)
-        {
-            var column = columns[0];
-            builder.AppendFormat(" {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
-            for (int i = 1; i < columns.Length; i++)
-            {
-                column = columns[i];
-                builder.AppendFormat(", {0}.{1} AS {2}", column.Parent.PrettyName, column.DbName, column.PrettyName);
-            }
-        }
-    }
-
-    public static class Extensions
-    {
-        public static bool Equals<T>(this T[] obj, T[] other)
-        {
-            if (obj.Length != other.Length) return false;
-            for(int i=0; i< obj.Length; i++)
-            {
-                if(!obj[i].Equals(other[i]))
-                    return false;
-            }
-            return true;
-        }
-
-        public static int GetListHashCode<T>(this T[] list)
+        #region General Helper Methods
+        private int GetSqlHash(ColumnDefinition[] columns, Filter[][] filters = null, Join[] joins = null)
         {
             unchecked
             {
                 int hash = (int)2166136261;
-                if (list == null) return hash;
-                foreach (var val in list)
-                {
-                    hash = hash * 16777619 ^ val.GetHashCode();
-                }
+                hash = hash * 16777619 ^ (columns ?? new ColumnDefinition[0]).GetListHashCode();
+                foreach (var filterList in filters)
+                    hash = hash * 16777619 ^ (filterList ?? new Filter[0]).GetListHashCode();
+                hash = hash * 16777619 ^ (joins ?? new Join[0]).GetListHashCode();
                 return hash;
             }
         }
+        #endregion
+
+        #region Constructor Helper Methods
+        private void PopulateTable(Type type)
+        {
+            var table = GetTable(type);
+            var dbName = table != null ? table.DbName : type.Name;
+            Table = new TableDefintition { DbName = dbName, PrettyName = type.Name };
+        }
+
+        private void PopulateColumns(_PropertyInfo[] properties)
+        {
+            Columns = new ColumnDefinition[properties.Length];
+            for (int i = 0; i < properties.Length; i++)
+            {
+                var property = properties[i];
+                var column = GetColumn(property);
+                var dbName = column != null ? column.DbName : property.Name;
+                Columns[i] = new ColumnDefinition { DbName = dbName, PrettyName = property.Name, Parent = Table };
+            }
+        }
+
+        private TableAttribute GetTable(_MemberInfo info)
+        {
+            return info.GetCustomAttributes(true).OfType<TableAttribute>().FirstOrDefault();
+        }
+
+        private ColumnAttribute GetColumn(_PropertyInfo info)
+        {
+            return info.GetCustomAttributes(true).OfType<ColumnAttribute>().FirstOrDefault();
+        }
+        #endregion
     }
 
     internal interface IAlias
@@ -244,15 +241,46 @@ namespace Sqlfy
         }
     }
 
-    public class SqlObjectAttribute : Attribute
+    public class ColumnAttribute : Attribute
     {
         public string DbName { get; set; }
-        public string PrettyName { get; set; }
+        public AggregateType AggregateType { get; set; }
+    }
+
+    public class TableAttribute : Attribute
+    {
+        public string DbName { get; set; }
+    }
+    public static class Extensions
+    {
+        public static bool Equals<T>(this T[] obj, T[] other)
+        {
+            if (obj.Length != other.Length) return false;
+            for (int i = 0; i < obj.Length; i++)
+            {
+                if (!obj[i].Equals(other[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        public static int GetListHashCode<T>(this T[] list)
+        {
+            unchecked
+            {
+                int hash = (int)2166136261;
+                if (list == null) return hash;
+                foreach (var val in list)
+                {
+                    hash = hash * 16777619 ^ val.GetHashCode();
+                }
+                return hash;
+            }
+        }
     }
 
     public class Filter
     {
-
         public ColumnDefinition Column { get; set; }
         public object Value { get; set; }
         public FilterType FilterType { get; set; }
@@ -311,15 +339,6 @@ namespace Sqlfy
             return true;
         }
         
-    }
-    public enum FilterType
-    {
-        EqualTo,
-        LessThan,
-        LessThanOrEqualTo,
-        GreaterThan,
-        GreaterThanOrEqualTo,
-        Like,
     }
 
     public class On
@@ -407,6 +426,7 @@ namespace Sqlfy
         }
     }
 
+    #region Enums
     public enum JoinType
     {
         Left,
@@ -414,4 +434,24 @@ namespace Sqlfy
         Inner,
         Full
     }
+
+    public enum FilterType
+    {
+        EqualTo,
+        LessThan,
+        LessThanOrEqualTo,
+        GreaterThan,
+        GreaterThanOrEqualTo,
+        Like,
+    }
+
+    public enum AggregateType
+    {
+        None,
+        Average,
+        Max,
+        Min,
+        Count
+    }
+    #endregion
 }
